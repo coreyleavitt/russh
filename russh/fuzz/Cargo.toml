@@ -1,0 +1,37 @@
+[package]
+name = "russh-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ssh-encoding = { version = "0.2", features = ["bytes"] }
+
+[dependencies.russh]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_kexinit"
+path = "fuzz_targets/fuzz_kexinit.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_key_parsing"
+path = "fuzz_targets/fuzz_key_parsing.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_channel_open"
+path = "fuzz_targets/fuzz_channel_open.rs"
+doc = false

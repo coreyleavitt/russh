@@ -12,6 +12,9 @@ repository = "https://github.com/warp-tech/russh"
 version = "0.57.1"
 rust-version = "1.85"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
 [features]
 default = ["flate2", "aws-lc-rs", "rsa"]
 # Crypto backends: enable at least one of `aws-lc-rs` or `ring`.

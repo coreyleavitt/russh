@@ -527,3 +527,12 @@ pub(crate) fn write_kex(
         Ok(())
     })
 }
+
+#[cfg(fuzzing)]
+pub mod fuzz_helpers {
+    use super::*;
+
+    pub fn parse_kexinit_server(buffer: &[u8]) -> Result<Names, Error> {
+        Server::read_kex(buffer, &Preferred::default(), None, &KexCause::Initial)
+    }
+}

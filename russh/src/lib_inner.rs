@@ -33,6 +33,18 @@ mod sshbuffer;
 
 pub use negotiation::{Names, Preferred};
 
+#[cfg(fuzzing)]
+pub mod fuzz_helpers {
+    pub use crate::negotiation::fuzz_helpers::parse_kexinit_server;
+    pub use crate::parsing::OpenChannelMessage;
+
+    pub fn parse_channel_open(
+        r: &mut impl ssh_encoding::Reader,
+    ) -> Result<OpenChannelMessage, crate::Error> {
+        OpenChannelMessage::parse(r)
+    }
+}
+
 mod pty;
 
 pub use pty::Pty;
