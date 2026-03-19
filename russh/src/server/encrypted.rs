@@ -1054,7 +1054,7 @@ impl Session {
                     Some(GlobalRequestResponse::Ping(return_channel)) => {
                         let _ = return_channel.send(());
                     }
-                    Some(GlobalRequestResponse::TcpIpForward(return_channel)) => {
+                    Some(GlobalRequestResponse::TcpIpForward { reply, .. }) => {
                         let result = if r.is_finished() {
                             // If a specific port was requested, the reply has no data
                             Some(0)
@@ -1067,10 +1067,10 @@ impl Session {
                                 }
                             }
                         };
-                        let _ = return_channel.send(result);
+                        let _ = reply.send(result);
                     }
-                    Some(GlobalRequestResponse::CancelTcpIpForward(return_channel)) => {
-                        let _ = return_channel.send(true);
+                    Some(GlobalRequestResponse::CancelTcpIpForward { reply, .. }) => {
+                        let _ = reply.send(true);
                     }
                     _ => {
                         error!("Received global request failure for unknown request!")
@@ -1087,11 +1087,11 @@ impl Session {
                     Some(GlobalRequestResponse::Ping(return_channel)) => {
                         let _ = return_channel.send(());
                     }
-                    Some(GlobalRequestResponse::TcpIpForward(return_channel)) => {
-                        let _ = return_channel.send(None);
+                    Some(GlobalRequestResponse::TcpIpForward { reply, .. }) => {
+                        let _ = reply.send(None);
                     }
-                    Some(GlobalRequestResponse::CancelTcpIpForward(return_channel)) => {
-                        let _ = return_channel.send(false);
+                    Some(GlobalRequestResponse::CancelTcpIpForward { reply, .. }) => {
+                        let _ = reply.send(false);
                     }
                     _ => {
                         error!("Received global request failure for unknown request!")

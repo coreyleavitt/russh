@@ -152,6 +152,7 @@ impl Session {
     ) -> Result<(), crate::Error> {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
+                self.forwarding_state.x11_requested = true;
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
 
@@ -306,10 +307,17 @@ impl Session {
         port: u32,
     ) -> Result<(), crate::Error> {
         if let Some(ref mut enc) = self.common.encrypted {
+            self.forwarding_state
+                .tcp_forwards
+                .insert((address.to_string(), port));
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
                 self.open_global_requests.push_back(
-                    crate::session::GlobalRequestResponse::TcpIpForward(reply_channel),
+                    crate::session::GlobalRequestResponse::TcpIpForward {
+                        reply: reply_channel,
+                        address: address.to_string(),
+                        port,
+                    },
                 );
             }
             push_packet!(enc.write, {
@@ -337,7 +345,11 @@ impl Session {
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
                 self.open_global_requests.push_back(
-                    crate::session::GlobalRequestResponse::CancelTcpIpForward(reply_channel),
+                    crate::session::GlobalRequestResponse::CancelTcpIpForward {
+                        reply: reply_channel,
+                        address: address.to_string(),
+                        port,
+                    },
                 );
             }
             push_packet!(enc.write, {
@@ -361,10 +373,16 @@ impl Session {
         socket_path: &str,
     ) -> Result<(), crate::Error> {
         if let Some(ref mut enc) = self.common.encrypted {
+            self.forwarding_state
+                .streamlocal_forwards
+                .insert(socket_path.to_string());
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
                 self.open_global_requests.push_back(
-                    crate::session::GlobalRequestResponse::StreamLocalForward(reply_channel),
+                    crate::session::GlobalRequestResponse::StreamLocalForward {
+                        reply: reply_channel,
+                        socket_path: socket_path.to_string(),
+                    },
                 );
             }
             push_packet!(enc.write, {
@@ -390,7 +408,10 @@ impl Session {
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
                 self.open_global_requests.push_back(
-                    crate::session::GlobalRequestResponse::CancelStreamLocalForward(reply_channel),
+                    crate::session::GlobalRequestResponse::CancelStreamLocalForward {
+                        reply: reply_channel,
+                        socket_path: socket_path.to_string(),
+                    },
                 );
             }
             push_packet!(enc.write, {
@@ -486,6 +507,7 @@ impl Session {
     ) -> Result<(), crate::Error> {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
+                self.forwarding_state.agent_forwarding_requested = true;
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
                     channel.recipient_channel.encode(&mut enc.write)?;

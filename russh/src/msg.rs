@@ -75,6 +75,7 @@ pub const CHANNEL_REQUEST: u8 = 98;
 pub const CHANNEL_SUCCESS: u8 = 99;
 pub const CHANNEL_FAILURE: u8 = 100;
 
+pub const SSH_OPEN_ADMINISTRATIVELY_PROHIBITED: u8 = 1;
 #[allow(dead_code)]
 pub const SSH_OPEN_CONNECT_FAILED: u8 = 2;
 pub const SSH_OPEN_UNKNOWN_CHANNEL_TYPE: u8 = 3;
@@ -86,7 +87,6 @@ mod server {
     // https://tools.ietf.org/html/rfc4256#section-5
     pub const USERAUTH_INFO_REQUEST: u8 = 60;
     pub const USERAUTH_PK_OK: u8 = 60;
-    pub const SSH_OPEN_ADMINISTRATIVELY_PROHIBITED: u8 = 1;
 }
 
 /// Validate a message+seqno against a strict kex order pattern

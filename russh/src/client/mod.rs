@@ -35,7 +35,7 @@
 //! [Session]: client::Session
 
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryInto;
 use std::num::Wrapping;
 use std::pin::Pin;
@@ -80,6 +80,21 @@ mod session;
 #[cfg(test)]
 mod test;
 
+/// Tracks which forwarding requests the client has made, so that
+/// server-initiated channel opens can be validated against prior requests.
+#[derive(Debug, Default)]
+pub(crate) struct ForwardingState {
+    /// Active TCP/IP forwarding bindings: (address, port).
+    /// Entries with port 0 are pending resolution (awaiting REQUEST_SUCCESS).
+    pub tcp_forwards: HashSet<(String, u32)>,
+    /// Active Unix domain socket forwarding bindings.
+    pub streamlocal_forwards: HashSet<String>,
+    /// Whether X11 forwarding has been requested on any channel.
+    pub x11_requested: bool,
+    /// Whether agent forwarding has been requested on any channel.
+    pub agent_forwarding_requested: bool,
+}
+
 /// Actual client session's state.
 ///
 /// It is in charge of multiplexing and keeping track of various channels
@@ -99,6 +114,7 @@ pub struct Session {
     inbound_channel_receiver: Receiver<Msg>,
     open_global_requests: VecDeque<GlobalRequestResponse>,
     server_sig_algs: Option<Vec<Algorithm>>,
+    forwarding_state: ForwardingState,
 }
 
 impl Drop for Session {
@@ -1032,6 +1048,7 @@ impl Session {
             pending_len: 0,
             open_global_requests: VecDeque::new(),
             server_sig_algs: None,
+            forwarding_state: ForwardingState::default(),
         }
     }
 
@@ -1854,7 +1871,10 @@ pub trait Handler: Sized + Send {
         async { Ok(()) }
     }
 
-    /// Called when the server opens a channel for a new remote port forwarding connection
+    /// Called when the server opens a channel for a new remote port forwarding connection.
+    ///
+    /// This is only called after russh has validated that the channel matches a prior
+    /// `tcpip-forward` request. Return `Ok(true)` to accept or `Ok(false)` to reject.
     #[allow(unused_variables)]
     fn server_channel_open_forwarded_tcpip(
         &mut self,
@@ -1864,29 +1884,35 @@ pub trait Handler: Sized + Send {
         originator_address: &str,
         originator_port: u32,
         session: &mut Session,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        async { Ok(true) }
     }
 
-    // Called when the server opens a channel for a new remote UDS forwarding connection
+    /// Called when the server opens a channel for a new remote UDS forwarding connection.
+    ///
+    /// This is only called after russh has validated that the channel matches a prior
+    /// `streamlocal-forward` request. Return `Ok(true)` to accept or `Ok(false)` to reject.
     #[allow(unused_variables)]
     fn server_channel_open_forwarded_streamlocal(
         &mut self,
         channel: Channel<Msg>,
         socket_path: &str,
         session: &mut Session,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        async { Ok(true) }
     }
 
-    /// Called when the server opens an agent forwarding channel
+    /// Called when the server opens an agent forwarding channel.
+    ///
+    /// This is only called after russh has validated that agent forwarding was previously
+    /// requested. Return `Ok(true)` to accept or `Ok(false)` to reject.
     #[allow(unused_variables)]
     fn server_channel_open_agent_forward(
         &mut self,
         channel: Channel<Msg>,
         session: &mut Session,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        async { Ok(true) }
     }
 
     /// Called when the server attempts to open a channel of unknown type. It may return `true`,
@@ -1912,42 +1938,10 @@ pub trait Handler: Sized + Send {
         async { Ok(()) }
     }
 
-    /// Called when the server opens a session channel.
-    #[allow(unused_variables)]
-    fn server_channel_open_session(
-        &mut self,
-        channel: Channel<Msg>,
-        session: &mut Session,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
-    }
-
-    /// Called when the server opens a direct tcp/ip channel (non-standard).
-    #[allow(unused_variables)]
-    fn server_channel_open_direct_tcpip(
-        &mut self,
-        channel: Channel<Msg>,
-        host_to_connect: &str,
-        port_to_connect: u32,
-        originator_address: &str,
-        originator_port: u32,
-        session: &mut Session,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
-    }
-
-    /// Called when the server opens a direct-streamlocal channel (non-standard).
-    #[allow(unused_variables)]
-    fn server_channel_open_direct_streamlocal(
-        &mut self,
-        channel: Channel<Msg>,
-        socket_path: &str,
-        session: &mut Session,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
-    }
-
     /// Called when the server opens an X11 channel.
+    ///
+    /// This is only called after russh has validated that X11 forwarding was previously
+    /// requested. Return `Ok(true)` to accept or `Ok(false)` to reject.
     #[allow(unused_variables)]
     fn server_channel_open_x11(
         &mut self,
@@ -1955,8 +1949,8 @@ pub trait Handler: Sized + Send {
         originator_address: &str,
         originator_port: u32,
         session: &mut Session,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        async { Ok(true) }
     }
 
     /// Called when the server sends us data. The `extended_code`

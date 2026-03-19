@@ -609,10 +609,24 @@ pub(crate) enum GlobalRequestResponse {
     /// request was for NoMoreSessions, disallow additional sessions
     NoMoreSessions,
     /// request was for TcpIpForward, sends Some(port) for success or None for failure
-    TcpIpForward(oneshot::Sender<Option<u32>>),
+    TcpIpForward {
+        reply: oneshot::Sender<Option<u32>>,
+        address: String,
+        port: u32,
+    },
     /// request was for CancelTcpIpForward, sends true for success or false for failure
-    CancelTcpIpForward(oneshot::Sender<bool>),
+    CancelTcpIpForward {
+        reply: oneshot::Sender<bool>,
+        address: String,
+        port: u32,
+    },
     /// request was for StreamLocalForward, sends true for success or false for failure
-    StreamLocalForward(oneshot::Sender<bool>),
-    CancelStreamLocalForward(oneshot::Sender<bool>),
+    StreamLocalForward {
+        reply: oneshot::Sender<bool>,
+        socket_path: String,
+    },
+    CancelStreamLocalForward {
+        reply: oneshot::Sender<bool>,
+        socket_path: String,
+    },
 }

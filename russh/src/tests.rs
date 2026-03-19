@@ -215,7 +215,7 @@ mod channels {
     }
 
     #[tokio::test]
-    async fn test_server_channels() {
+    async fn test_reject_server_session_channel() {
         #[derive(Debug)]
         struct Client {}
 
@@ -227,17 +227,6 @@ mod channels {
                 _server_public_key: &crate::keys::ssh_key::PublicKey,
             ) -> Result<bool, Self::Error> {
                 Ok(true)
-            }
-
-            async fn data(
-                &mut self,
-                channel: ChannelId,
-                data: &[u8],
-                session: &mut client::Session,
-            ) -> Result<(), Self::Error> {
-                assert_eq!(data, &b"hello world!"[..]);
-                session.data(channel, b"hey there!".to_vec())?;
-                Ok(())
             }
         }
 
@@ -279,15 +268,13 @@ mod channels {
             |c| async move { c },
             |s| async move {
                 a.await.unwrap();
-                let mut ch = s.channel_open_session().await.unwrap();
-                ch.data(&b"hello world!"[..]).await.unwrap();
-
-                let msg = ch.wait().await.unwrap();
-                if let ChannelMsg::Data { data } = msg {
-                    assert_eq!(&data[..], &b"hey there!"[..]);
-                } else {
-                    panic!("Unexpected message {msg:?}");
-                }
+                // Server-initiated session channels should be rejected by the client
+                // (RFC 4254 Section 6.1: sessions are opened by the client)
+                let result = s.channel_open_session().await;
+                assert!(
+                    result.is_err(),
+                    "Server-initiated session channel should be rejected"
+                );
                 s
             },
         )
@@ -558,6 +545,386 @@ mod channels {
                 }
 
                 server
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_reject_server_direct_tcpip() {
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            did_auth: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+
+        impl ServerHandle {
+            fn get_auth_waiter(&mut self) -> tokio::sync::oneshot::Receiver<()> {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.did_auth = Some(tx);
+                rx
+            }
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+            async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
+                if let Some(a) = self.did_auth.take() {
+                    a.send(()).unwrap();
+                }
+                Ok(())
+            }
+        }
+
+        let mut sh = ServerHandle { did_auth: None };
+        let a = sh.get_auth_waiter();
+        test_session(
+            Client {},
+            sh,
+            |c| async move { c },
+            |s| async move {
+                a.await.unwrap();
+                // Server-initiated direct-tcpip channels should be rejected
+                // (RFC 4254 Section 7.2: direct-tcpip is client-to-server only)
+                let result = s
+                    .channel_open_direct_tcpip("127.0.0.1", 80, "127.0.0.1", 12345)
+                    .await;
+                assert!(
+                    result.is_err(),
+                    "Server-initiated direct-tcpip should be rejected"
+                );
+                s
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_reject_forwarded_tcpip_without_request() {
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            did_auth: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+
+        impl ServerHandle {
+            fn get_auth_waiter(&mut self) -> tokio::sync::oneshot::Receiver<()> {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.did_auth = Some(tx);
+                rx
+            }
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+            async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
+                if let Some(a) = self.did_auth.take() {
+                    a.send(()).unwrap();
+                }
+                Ok(())
+            }
+        }
+
+        let mut sh = ServerHandle { did_auth: None };
+        let a = sh.get_auth_waiter();
+        test_session(
+            Client {},
+            sh,
+            |c| async move { c },
+            |s| async move {
+                a.await.unwrap();
+                // forwarded-tcpip without a prior tcpip-forward request should be rejected
+                let result = s
+                    .channel_open_forwarded_tcpip("127.0.0.1", 8080, "10.0.0.1", 54321)
+                    .await;
+                assert!(
+                    result.is_err(),
+                    "forwarded-tcpip without prior request should be rejected"
+                );
+                s
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_accept_forwarded_tcpip_with_request() {
+        use std::sync::Arc;
+        use tokio::sync::Notify;
+
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            forward_ready: Arc<Notify>,
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+
+            async fn tcpip_forward(
+                &mut self,
+                _address: &str,
+                _port: &mut u32,
+                _session: &mut Session,
+            ) -> Result<bool, Self::Error> {
+                // Accept the forward request, then signal that it's ready
+                self.forward_ready.notify_one();
+                Ok(true)
+            }
+        }
+
+        let forward_ready = Arc::new(Notify::new());
+        let forward_ready_server = forward_ready.clone();
+
+        let sh = ServerHandle {
+            forward_ready: forward_ready_server,
+        };
+
+        let forward_ready_client = forward_ready.clone();
+        test_session(
+            Client {},
+            sh,
+            |mut c| async move {
+                // Request TCP/IP forwarding first
+                let port = c.tcpip_forward("127.0.0.1", 8080).await.unwrap();
+                assert_eq!(port, 0); // server returns 0 for specific port requests
+                c
+            },
+            |s| async move {
+                // Wait for the forward request to be processed
+                forward_ready_client.notified().await;
+                // Small delay to ensure the client has processed the reply
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Now forwarded-tcpip should be accepted since client requested forwarding
+                let result = s
+                    .channel_open_forwarded_tcpip("127.0.0.1", 8080, "10.0.0.1", 54321)
+                    .await;
+                assert!(
+                    result.is_ok(),
+                    "forwarded-tcpip with prior request should be accepted"
+                );
+                s
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_reject_x11_without_request() {
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            did_auth: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+
+        impl ServerHandle {
+            fn get_auth_waiter(&mut self) -> tokio::sync::oneshot::Receiver<()> {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.did_auth = Some(tx);
+                rx
+            }
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+            async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
+                if let Some(a) = self.did_auth.take() {
+                    a.send(()).unwrap();
+                }
+                Ok(())
+            }
+        }
+
+        let mut sh = ServerHandle { did_auth: None };
+        let a = sh.get_auth_waiter();
+        test_session(
+            Client {},
+            sh,
+            |c| async move { c },
+            |s| async move {
+                a.await.unwrap();
+                // X11 channel without prior x11 request should be rejected
+                let result = s.channel_open_x11("127.0.0.1", 6000).await;
+                assert!(
+                    result.is_err(),
+                    "X11 channel without prior request should be rejected"
+                );
+                s
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_cancel_removes_forwarding_state() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            state: Arc<AtomicU8>,
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+
+            async fn tcpip_forward(
+                &mut self,
+                _address: &str,
+                _port: &mut u32,
+                _session: &mut Session,
+            ) -> Result<bool, Self::Error> {
+                self.state.store(1, Ordering::SeqCst);
+                Ok(true)
+            }
+
+            async fn cancel_tcpip_forward(
+                &mut self,
+                _address: &str,
+                _port: u32,
+                _session: &mut Session,
+            ) -> Result<bool, Self::Error> {
+                self.state.store(2, Ordering::SeqCst);
+                Ok(true)
+            }
+        }
+
+        let state = Arc::new(AtomicU8::new(0));
+
+        let sh = ServerHandle {
+            state: state.clone(),
+        };
+
+        let state_server = state.clone();
+
+        test_session(
+            Client {},
+            sh,
+            |mut c| async move {
+                // Request forwarding, then cancel it
+                let _port = c.tcpip_forward("127.0.0.1", 9090).await.unwrap();
+                c.cancel_tcpip_forward("127.0.0.1", 9090).await.unwrap();
+                // Give server time to attempt the channel open
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                c
+            },
+            |s| async move {
+                // Wait until cancel has been processed
+                while state_server.load(Ordering::SeqCst) < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                // Small delay to ensure client has processed the cancel reply
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // After cancel, forwarded-tcpip should be rejected
+                let result = s
+                    .channel_open_forwarded_tcpip("127.0.0.1", 9090, "10.0.0.1", 54321)
+                    .await;
+                assert!(
+                    result.is_err(),
+                    "forwarded-tcpip after cancel should be rejected"
+                );
+                s
             },
         )
         .await;

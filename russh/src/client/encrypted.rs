@@ -620,16 +620,16 @@ impl Session {
                 client.channel_failure(channel_num, self).await
             }
             Some((&msg::CHANNEL_OPEN, mut r)) => {
-                let msg = OpenChannelMessage::parse(&mut r)?;
+                let open_msg = OpenChannelMessage::parse(&mut r)?;
 
                 if let Some(ref mut enc) = self.common.encrypted {
                     let id = enc.new_channel_id();
-                    let channel = ChannelParams {
-                        recipient_channel: msg.recipient_channel,
+                    let channel_params = ChannelParams {
+                        recipient_channel: open_msg.recipient_channel,
                         sender_channel: id,
-                        recipient_window_size: msg.recipient_window_size,
+                        recipient_window_size: open_msg.recipient_window_size,
                         sender_window_size: self.common.config.window_size,
-                        recipient_maximum_packet_size: msg.recipient_maximum_packet_size,
+                        recipient_maximum_packet_size: open_msg.recipient_maximum_packet_size,
                         sender_maximum_packet_size: self.common.config.maximum_packet_size,
                         confirmed: true,
                         wants_reply: false,
@@ -638,104 +638,168 @@ impl Session {
                         pending_close: false,
                     };
 
-                    let confirm = || {
-                        debug!("confirming channel: {msg:?}");
-                        map_err!(msg.confirm(
-                            &mut enc.write,
-                            id.0,
-                            channel.sender_window_size,
-                            channel.sender_maximum_packet_size,
-                        ))?;
-                        enc.channels.insert(id, channel);
-                        Ok(())
-                    };
+                    match &open_msg.typ {
+                        // Layer 1: Hard-reject types that are never legitimate from a server.
+                        // RFC 4254 Section 6.1: Sessions are opened by the client.
+                        // RFC 4254 Section 7.2: direct-tcpip is client-to-server only.
+                        // OpenSSH rejects all three of these.
+                        ChannelType::Session
+                        | ChannelType::DirectTcpip(_)
+                        | ChannelType::DirectStreamLocal(_) => {
+                            debug!(
+                                "rejecting server-initiated channel open of type {:?} (protocol violation)",
+                                open_msg.typ
+                            );
+                            open_msg.fail(
+                                &mut enc.write,
+                                msg::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                                b"Server-initiated channel type not permitted",
+                            )?;
+                        }
 
-                    match &msg.typ {
-                        ChannelType::Session => {
-                            confirm()?;
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client.server_channel_open_session(channel, self).await?
+                        // Layer 1+2: Validate against forwarding state, then call handler.
+                        ChannelType::ForwardedTcpIp(d) => {
+                            // Validate: must match a prior tcpip-forward request.
+                            // Skip entries with port 0 (pending resolution).
+                            let has_match = self.forwarding_state.tcp_forwards.iter().any(
+                                |(addr, port)| {
+                                    *port != 0
+                                        && *port == d.port_to_connect
+                                        && *addr == d.host_to_connect
+                                },
+                            );
+                            if !has_match {
+                                debug!(
+                                    "rejecting forwarded-tcpip for {}:{} (no matching tcpip-forward request)",
+                                    d.host_to_connect, d.port_to_connect
+                                );
+                                open_msg.fail(
+                                    &mut enc.write,
+                                    msg::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                                    b"No matching forwarding request",
+                                )?;
+                            } else {
+                                let channel = self.prepare_channel(id, &open_msg);
+                                let accepted = match client
+                                    .server_channel_open_forwarded_tcpip(
+                                        channel,
+                                        &d.host_to_connect,
+                                        d.port_to_connect,
+                                        &d.originator_address,
+                                        d.originator_port,
+                                        self,
+                                    )
+                                    .await
+                                {
+                                    Ok(accepted) => accepted,
+                                    Err(e) => {
+                                        self.finalize_channel_open(&open_msg, channel_params, id, false)?;
+                                        return Err(e);
+                                    }
+                                };
+                                self.finalize_channel_open(&open_msg, channel_params, id, accepted)?;
+                            }
                         }
-                        ChannelType::DirectTcpip(d) => {
-                            confirm()?;
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client
-                                .server_channel_open_direct_tcpip(
-                                    channel,
-                                    &d.host_to_connect,
-                                    d.port_to_connect,
-                                    &d.originator_address,
-                                    d.originator_port,
-                                    self,
-                                )
-                                .await?
+
+                        ChannelType::ForwardedStreamLocal(d) => {
+                            let has_match = self
+                                .forwarding_state
+                                .streamlocal_forwards
+                                .contains(&d.socket_path);
+                            if !has_match {
+                                debug!(
+                                    "rejecting forwarded-streamlocal for {} (no matching streamlocal-forward request)",
+                                    d.socket_path
+                                );
+                                open_msg.fail(
+                                    &mut enc.write,
+                                    msg::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                                    b"No matching forwarding request",
+                                )?;
+                            } else {
+                                let channel = self.prepare_channel(id, &open_msg);
+                                let accepted = match client
+                                    .server_channel_open_forwarded_streamlocal(
+                                        channel,
+                                        &d.socket_path,
+                                        self,
+                                    )
+                                    .await
+                                {
+                                    Ok(accepted) => accepted,
+                                    Err(e) => {
+                                        self.finalize_channel_open(&open_msg, channel_params, id, false)?;
+                                        return Err(e);
+                                    }
+                                };
+                                self.finalize_channel_open(&open_msg, channel_params, id, accepted)?;
+                            }
                         }
-                        ChannelType::DirectStreamLocal(d) => {
-                            confirm()?;
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client
-                                .server_channel_open_direct_streamlocal(
-                                    channel,
-                                    &d.socket_path,
-                                    self,
-                                )
-                                .await?
-                        }
+
                         ChannelType::X11 {
                             originator_address,
                             originator_port,
                         } => {
-                            confirm()?;
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client
-                                .server_channel_open_x11(
-                                    channel,
-                                    originator_address,
-                                    *originator_port,
-                                    self,
-                                )
-                                .await?
+                            if !self.forwarding_state.x11_requested {
+                                debug!("rejecting X11 channel (no prior x11 request)");
+                                open_msg.fail(
+                                    &mut enc.write,
+                                    msg::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                                    b"No prior X11 forwarding request",
+                                )?;
+                            } else {
+                                let channel = self.prepare_channel(id, &open_msg);
+                                let accepted = match client
+                                    .server_channel_open_x11(
+                                        channel,
+                                        originator_address,
+                                        *originator_port,
+                                        self,
+                                    )
+                                    .await
+                                {
+                                    Ok(accepted) => accepted,
+                                    Err(e) => {
+                                        self.finalize_channel_open(&open_msg, channel_params, id, false)?;
+                                        return Err(e);
+                                    }
+                                };
+                                self.finalize_channel_open(&open_msg, channel_params, id, accepted)?;
+                            }
                         }
-                        ChannelType::ForwardedTcpIp(d) => {
-                            confirm()?;
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client
-                                .server_channel_open_forwarded_tcpip(
-                                    channel,
-                                    &d.host_to_connect,
-                                    d.port_to_connect,
-                                    &d.originator_address,
-                                    d.originator_port,
-                                    self,
-                                )
-                                .await?
-                        }
-                        ChannelType::ForwardedStreamLocal(d) => {
-                            confirm()?;
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client
-                                .server_channel_open_forwarded_streamlocal(
-                                    channel,
-                                    &d.socket_path,
-                                    self,
-                                )
-                                .await?;
-                        }
+
                         ChannelType::AgentForward => {
-                            confirm()?;
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client
-                                .server_channel_open_agent_forward(channel, self)
-                                .await?
+                            if !self.forwarding_state.agent_forwarding_requested {
+                                debug!("rejecting agent forward channel (no prior agent forward request)");
+                                open_msg.fail(
+                                    &mut enc.write,
+                                    msg::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                                    b"No prior agent forwarding request",
+                                )?;
+                            } else {
+                                let channel = self.prepare_channel(id, &open_msg);
+                                let accepted = match client
+                                    .server_channel_open_agent_forward(channel, self)
+                                    .await
+                                {
+                                    Ok(accepted) => accepted,
+                                    Err(e) => {
+                                        self.finalize_channel_open(&open_msg, channel_params, id, false)?;
+                                        return Err(e);
+                                    }
+                                };
+                                self.finalize_channel_open(&open_msg, channel_params, id, accepted)?;
+                            }
                         }
+
                         ChannelType::Unknown { typ } => {
                             if client.should_accept_unknown_server_channel(id, typ).await {
-                                confirm()?;
-                                let channel = self.accept_server_initiated_channel(id, &msg);
+                                let channel = self.prepare_channel(id, &open_msg);
+                                self.finalize_channel_open(&open_msg, channel_params, id, true)?;
                                 client.server_channel_open_unknown(channel, self).await?;
                             } else {
                                 debug!("unknown channel type: {typ}");
-                                msg.unknown_type(&mut enc.write)?;
+                                open_msg.unknown_type(&mut enc.write)?;
                             }
                         }
                     };
@@ -756,7 +820,11 @@ impl Session {
                     Some(GlobalRequestResponse::NoMoreSessions) => {
                         debug!("no-more-sessions@openssh.com requests success");
                     }
-                    Some(GlobalRequestResponse::TcpIpForward(return_channel)) => {
+                    Some(GlobalRequestResponse::TcpIpForward {
+                        reply,
+                        address,
+                        port,
+                    }) => {
                         let result = if r.is_empty() {
                             // If a specific port was requested, the reply has no data
                             Some(0)
@@ -769,16 +837,47 @@ impl Session {
                                 }
                             }
                         };
-                        let _ = return_channel.send(result);
+                        // Update forwarding state: if port was 0, replace with assigned port
+                        if let Some(assigned_port) = result {
+                            if port == 0 {
+                                self.forwarding_state.tcp_forwards.remove(&(address.clone(), 0));
+                                if assigned_port != 0 {
+                                    self.forwarding_state
+                                        .tcp_forwards
+                                        .insert((address, assigned_port));
+                                }
+                            }
+                        } else {
+                            // Request failed, remove from state
+                            self.forwarding_state.tcp_forwards.remove(&(address, port));
+                        }
+                        let _ = reply.send(result);
                     }
-                    Some(GlobalRequestResponse::CancelTcpIpForward(return_channel)) => {
-                        let _ = return_channel.send(true);
+                    Some(GlobalRequestResponse::CancelTcpIpForward {
+                        reply,
+                        address,
+                        port,
+                    }) => {
+                        // Cancel succeeded: remove forwarding from state
+                        self.forwarding_state.tcp_forwards.remove(&(address, port));
+                        let _ = reply.send(true);
                     }
-                    Some(GlobalRequestResponse::StreamLocalForward(return_channel)) => {
-                        let _ = return_channel.send(true);
+                    Some(GlobalRequestResponse::StreamLocalForward {
+                        reply,
+                        socket_path: _,
+                    }) => {
+                        // Success: forwarding is active (already in state from request time)
+                        let _ = reply.send(true);
                     }
-                    Some(GlobalRequestResponse::CancelStreamLocalForward(return_channel)) => {
-                        let _ = return_channel.send(true);
+                    Some(GlobalRequestResponse::CancelStreamLocalForward {
+                        reply,
+                        socket_path,
+                    }) => {
+                        // Cancel succeeded: remove from state
+                        self.forwarding_state
+                            .streamlocal_forwards
+                            .remove(&socket_path);
+                        let _ = reply.send(true);
                     }
                     None => {
                         error!("Received global request failure for unknown request!")
@@ -798,17 +897,39 @@ impl Session {
                     Some(GlobalRequestResponse::NoMoreSessions) => {
                         warn!("no-more-sessions@openssh.com requests failure");
                     }
-                    Some(GlobalRequestResponse::TcpIpForward(return_channel)) => {
-                        let _ = return_channel.send(None);
+                    Some(GlobalRequestResponse::TcpIpForward {
+                        reply,
+                        address,
+                        port,
+                    }) => {
+                        // Request failed: remove from forwarding state
+                        self.forwarding_state.tcp_forwards.remove(&(address, port));
+                        let _ = reply.send(None);
                     }
-                    Some(GlobalRequestResponse::CancelTcpIpForward(return_channel)) => {
-                        let _ = return_channel.send(false);
+                    Some(GlobalRequestResponse::CancelTcpIpForward {
+                        reply,
+                        address: _,
+                        port: _,
+                    }) => {
+                        // Cancel was rejected: forwarding is still active, keep state
+                        let _ = reply.send(false);
                     }
-                    Some(GlobalRequestResponse::StreamLocalForward(return_channel)) => {
-                        let _ = return_channel.send(false);
+                    Some(GlobalRequestResponse::StreamLocalForward {
+                        reply,
+                        socket_path,
+                    }) => {
+                        // Request failed: remove from forwarding state
+                        self.forwarding_state
+                            .streamlocal_forwards
+                            .remove(&socket_path);
+                        let _ = reply.send(false);
                     }
-                    Some(GlobalRequestResponse::CancelStreamLocalForward(return_channel)) => {
-                        let _ = return_channel.send(false);
+                    Some(GlobalRequestResponse::CancelStreamLocalForward {
+                        reply,
+                        socket_path: _,
+                    }) => {
+                        // Cancel was rejected: forwarding is still active, keep state
+                        let _ = reply.send(false);
                     }
                     None => {
                         error!("Received global request failure for unknown request!")
@@ -823,22 +944,56 @@ impl Session {
         }
     }
 
-    fn accept_server_initiated_channel(
+    /// Creates a `Channel` for a server-initiated channel open and inserts
+    /// the `ChannelRef` into `self.channels`. Must be followed by
+    /// `finalize_channel_open` to confirm or reject on the wire.
+    fn prepare_channel(
         &mut self,
         id: ChannelId,
-        msg: &OpenChannelMessage,
+        open_msg: &OpenChannelMessage,
     ) -> Channel<Msg> {
         let (channel, channel_ref) = Channel::new(
             id,
             self.inbound_channel_sender.clone(),
-            msg.recipient_maximum_packet_size,
-            msg.recipient_window_size,
+            open_msg.recipient_maximum_packet_size,
+            open_msg.recipient_window_size,
             self.common.config.channel_buffer_size,
         );
-
         self.channels.insert(id, channel_ref);
-
         channel
+    }
+
+    /// Finalizes a server-initiated channel open: confirms or rejects on the wire,
+    /// and manages `Encrypted::channels` and `self.channels` accordingly.
+    fn finalize_channel_open(
+        &mut self,
+        open_msg: &OpenChannelMessage,
+        channel_params: ChannelParams,
+        id: ChannelId,
+        allowed: bool,
+    ) -> Result<(), crate::Error> {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if allowed {
+                debug!("confirming channel: {open_msg:?}");
+                open_msg.confirm(
+                    &mut enc.write,
+                    channel_params.sender_channel.0,
+                    channel_params.sender_window_size,
+                    channel_params.sender_maximum_packet_size,
+                )?;
+                enc.channels.insert(id, channel_params);
+            } else {
+                debug!("handler rejected channel: {open_msg:?}");
+                open_msg.fail(
+                    &mut enc.write,
+                    msg::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                    b"Rejected by application",
+                )?;
+                // Remove the ChannelRef that was optimistically inserted
+                self.channels.remove(&id);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn write_auth_request_if_needed(
