@@ -159,9 +159,11 @@ impl Session {
                                 let _lang = map_err!(String::decode(&mut r))?;
                                 let n_prompts = map_err!(u32::decode(&mut r))?;
 
-                                // read prompts
-                                let mut prompts =
-                                    Vec::with_capacity(n_prompts.try_into().unwrap_or(0));
+                                // Bound allocation and iteration by remaining packet data.
+                                // Each prompt needs at least 5 bytes (4-byte string length + 1-byte echo flag).
+                                let max_prompts = r.remaining_len() / 5;
+                                let n_prompts = (n_prompts as usize).min(max_prompts);
+                                let mut prompts = Vec::with_capacity(n_prompts);
                                 for _i in 0..n_prompts {
                                     let prompt = map_err!(String::decode(&mut r))?;
 
