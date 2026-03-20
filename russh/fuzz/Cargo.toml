@@ -58,3 +58,13 @@ doc = false
 name = "fuzz_known_hosts"
 path = "fuzz_targets/fuzz_known_hosts.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_ssh_id"
+path = "fuzz_targets/fuzz_ssh_id.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_agent"
+path = "fuzz_targets/fuzz_agent.rs"
+doc = false

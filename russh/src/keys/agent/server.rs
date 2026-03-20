@@ -350,3 +350,24 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync 
         Ok((agent, true))
     }
 }
+
+#[cfg(fuzzing)]
+pub fn fuzz_respond(data: &[u8]) -> Result<Vec<u8>, Error> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .map_err(Error::IO)?;
+    rt.block_on(async {
+        let keys = KeyStore(Arc::new(RwLock::new(HashMap::new())));
+        let lock = Lock(Arc::new(RwLock::new(CryptoVec::new())));
+        let mut conn = Connection {
+            lock,
+            keys,
+            agent: Some(()),
+            s: std::io::Cursor::new(Vec::new()),
+            buf: data.to_vec(),
+        };
+        let mut writebuf = Vec::new();
+        let _ = conn.respond(&mut writebuf).await;
+        Ok(writebuf)
+    })
+}

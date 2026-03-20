@@ -55,6 +55,22 @@ pub mod fuzz_helpers {
     pub fn match_known_host(host: &str, pattern: &str) -> bool {
         crate::keys::known_hosts::match_hostname(host, pattern)
     }
+
+    pub fn read_ssh_id(data: &[u8]) -> Result<Vec<u8>, crate::Error> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .map_err(crate::Error::IO)?;
+        rt.block_on(async {
+            let cursor = std::io::Cursor::new(data.to_vec());
+            let mut reader = crate::ssh_read::SshRead::new(cursor);
+            let id = reader.read_ssh_id().await?;
+            Ok(id.to_vec())
+        })
+    }
+
+    pub fn agent_respond(data: &[u8]) -> Result<Vec<u8>, crate::keys::Error> {
+        crate::keys::agent::server::fuzz_respond(data)
+    }
 }
 
 mod pty;
