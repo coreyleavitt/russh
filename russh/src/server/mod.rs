@@ -1163,3 +1163,123 @@ async fn reply<H: Handler + Send>(
     // Handle key exchange/re-exchange.
     session.server_read_encrypted(handler, pkt).await
 }
+
+#[cfg(fuzzing)]
+pub mod fuzz_helpers {
+    use std::borrow::Cow;
+    use std::collections::{HashMap, VecDeque};
+    use std::num::Wrapping;
+    use std::sync::Arc;
+
+    use tokio::sync::mpsc::channel;
+
+    use crate::auth::{self, CurrentRequest, MethodSet};
+    use crate::cipher;
+    use crate::compression::{self, Compression};
+    use crate::kex::{KexAlgorithm, NoneKexAlgorithm, SessionKexState};
+    use crate::mac;
+    use crate::session::{CommonSession, Encrypted, EncryptedState, Exchange};
+    use crate::sshbuffer::PacketWriter;
+    use crate::CryptoVec;
+
+    use super::{Auth, Config, Handler, Session, session::Handle};
+
+    struct FuzzHandler;
+
+    impl Handler for FuzzHandler {
+        type Error = crate::Error;
+
+        fn auth_keyboard_interactive<'a>(
+            &'a mut self,
+            _user: &str,
+            _submethods: &str,
+            _response: Option<super::Response<'a>>,
+        ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+            async {
+                Ok(Auth::Partial {
+                    name: Cow::Borrowed("Challenge"),
+                    instructions: Cow::Borrowed("Enter code"),
+                    prompts: Cow::Borrowed(&[(Cow::Borrowed("Code: "), true)]),
+                })
+            }
+        }
+    }
+
+    fn make_session() -> Session {
+        let config = Arc::new(Config::default());
+        let (sender, receiver) = channel(10);
+
+        let encrypted = Encrypted {
+            state: EncryptedState::WaitingAuthRequest(auth::AuthRequest {
+                methods: MethodSet::all(),
+                partial_success: false,
+                current: Some(CurrentRequest::KeyboardInteractive {
+                    submethods: String::new(),
+                }),
+                rejection_count: 0,
+            }),
+            exchange: Some(Exchange::default()),
+            kex: KexAlgorithm::None(NoneKexAlgorithm {}),
+            key: 0,
+            client_mac: mac::NONE,
+            server_mac: mac::NONE,
+            session_id: CryptoVec::new(),
+            channels: HashMap::new(),
+            last_channel_id: Wrapping(0),
+            write: Vec::new(),
+            write_cursor: 0,
+            last_rekey: russh_util::time::Instant::now(),
+            server_compression: Compression::None,
+            client_compression: Compression::None,
+            decompress: compression::Decompress::None,
+            rekey_wanted: false,
+            received_extensions: Vec::new(),
+            extension_info_awaiters: HashMap::new(),
+        };
+
+        Session {
+            common: CommonSession {
+                auth_user: String::new(),
+                remote_sshid: Vec::new(),
+                config,
+                encrypted: Some(encrypted),
+                auth_method: None,
+                auth_attempts: 0,
+                packet_writer: PacketWriter::clear(),
+                remote_to_local: Box::new(cipher::clear::Key {}),
+                wants_reply: false,
+                disconnected: false,
+                buffer: Vec::new(),
+                strict_kex: false,
+                alive_timeouts: 0,
+                received_data: false,
+            },
+            sender: Handle {
+                sender,
+                channel_buffer_size: 10,
+            },
+            receiver,
+            target_window_size: 2048,
+            pending_reads: Vec::new(),
+            pending_len: 0,
+            channels: HashMap::new(),
+            open_global_requests: VecDeque::new(),
+            kex: SessionKexState::Idle,
+        }
+    }
+
+    /// Fuzz `process_packet` in the `WaitingAuthRequest` state with
+    /// keyboard-interactive active. This is the pre-auth attack surface.
+    pub fn fuzz_server_process_packet(data: &[u8]) -> Result<(), crate::Error> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .map_err(crate::Error::IO)?;
+        rt.block_on(async {
+            let mut session = make_session();
+            let mut handler = FuzzHandler;
+            let _ = session.process_packet(&mut handler, data).await;
+            Ok(())
+        })
+    }
+}

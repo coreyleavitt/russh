@@ -68,3 +68,8 @@ doc = false
 name = "fuzz_agent"
 path = "fuzz_targets/fuzz_agent.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_server_packet"
+path = "fuzz_targets/fuzz_server_packet.rs"
+doc = false

@@ -71,6 +71,11 @@ pub mod fuzz_helpers {
     pub fn agent_respond(data: &[u8]) -> Result<Vec<u8>, crate::keys::Error> {
         crate::keys::agent::server::fuzz_respond(data)
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn server_process_packet(data: &[u8]) -> Result<(), crate::Error> {
+        crate::server::fuzz_helpers::fuzz_server_process_packet(data)
+    }
 }
 
 mod pty;

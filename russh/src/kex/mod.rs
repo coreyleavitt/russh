@@ -20,6 +20,8 @@ pub mod dh;
 mod ecdh_nistp;
 mod hybrid_mlkem;
 mod none;
+#[cfg(fuzzing)]
+pub(crate) use none::NoneKexAlgorithm;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
