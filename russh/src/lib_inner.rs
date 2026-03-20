@@ -43,6 +43,14 @@ pub mod fuzz_helpers {
     ) -> Result<OpenChannelMessage, crate::Error> {
         OpenChannelMessage::parse(r)
     }
+
+    pub fn decode_certificate(
+        pubkey_algo: &str,
+        buf: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        crate::cert::PublicKeyOrCertificate::decode(pubkey_algo, buf)?;
+        Ok(())
+    }
 }
 
 mod pty;

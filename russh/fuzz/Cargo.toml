@@ -14,6 +14,9 @@ ssh-encoding = { version = "0.2", features = ["bytes"] }
 [dependencies.russh]
 path = ".."
 
+[dependencies.russh-config]
+path = "../../russh-config"
+
 # Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
@@ -34,4 +37,19 @@ doc = false
 [[bin]]
 name = "fuzz_channel_open"
 path = "fuzz_targets/fuzz_channel_open.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_certificate"
+path = "fuzz_targets/fuzz_certificate.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_ssh_config"
+path = "fuzz_targets/fuzz_ssh_config.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_gex_params"
+path = "fuzz_targets/fuzz_gex_params.rs"
 doc = false
