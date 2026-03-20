@@ -3,4 +3,5 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     let _ = russh::fuzz_helpers::parse_kexinit_server(data);
+    let _ = russh::fuzz_helpers::parse_kexinit_client(data);
 });

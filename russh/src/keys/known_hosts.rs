@@ -106,7 +106,7 @@ pub fn known_host_keys_path<P: AsRef<Path>>(
     Ok(matches)
 }
 
-fn match_hostname(host: &str, pattern: &str) -> bool {
+pub(crate) fn match_hostname(host: &str, pattern: &str) -> bool {
     for entry in pattern.split(',') {
         if entry.starts_with("|1|") {
             let mut parts = entry.split('|').skip(2);

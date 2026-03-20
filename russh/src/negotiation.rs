@@ -535,4 +535,8 @@ pub mod fuzz_helpers {
     pub fn parse_kexinit_server(buffer: &[u8]) -> Result<Names, Error> {
         Server::read_kex(buffer, &Preferred::default(), None, &KexCause::Initial)
     }
+
+    pub fn parse_kexinit_client(buffer: &[u8]) -> Result<Names, Error> {
+        Client::read_kex(buffer, &Preferred::default(), None, &KexCause::Initial)
+    }
 }

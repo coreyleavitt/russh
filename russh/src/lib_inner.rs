@@ -35,7 +35,7 @@ pub use negotiation::{Names, Preferred};
 
 #[cfg(fuzzing)]
 pub mod fuzz_helpers {
-    pub use crate::negotiation::fuzz_helpers::parse_kexinit_server;
+    pub use crate::negotiation::fuzz_helpers::{parse_kexinit_client, parse_kexinit_server};
     pub use crate::parsing::OpenChannelMessage;
 
     pub fn parse_channel_open(
@@ -50,6 +50,10 @@ pub mod fuzz_helpers {
     ) -> Result<(), Box<dyn std::error::Error>> {
         crate::cert::PublicKeyOrCertificate::decode(pubkey_algo, buf)?;
         Ok(())
+    }
+
+    pub fn match_known_host(host: &str, pattern: &str) -> bool {
+        crate::keys::known_hosts::match_hostname(host, pattern)
     }
 }
 

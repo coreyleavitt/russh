@@ -53,3 +53,8 @@ doc = false
 name = "fuzz_gex_params"
 path = "fuzz_targets/fuzz_gex_params.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_known_hosts"
+path = "fuzz_targets/fuzz_known_hosts.rs"
+doc = false
